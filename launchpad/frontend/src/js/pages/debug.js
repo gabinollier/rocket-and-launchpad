@@ -59,16 +59,16 @@ function setupServoControls() {
     document.getElementById("rotate-servo-plus-2")?.addEventListener("click", () => rotateServo(2));
     document.getElementById("rotate-servo-minus-2")?.addEventListener("click", () => rotateServo(-2));
 
-    document.getElementById("rotate-servo-plus-120")?.addEventListener("click", () => {
-        if (confirm("ATTENTION : Êtes-vous sûr de vouloir faire tourner le servo de 120° ? Si la fusée est pressurisée, elle va décoller"))
+    document.getElementById("rotate-servo-plus-60")?.addEventListener("click", () => {
+        if (confirm("ATTENTION : Êtes-vous sûr de vouloir faire tourner le servo de 60 ? Si la fusée est pressurisée, elle va décoller"))
         {
-            rotateServo(120);
+            rotateServo(60);
         }
     });
-    document.getElementById("rotate-servo-minus-120")?.addEventListener("click", () => {
-        if (confirm("ATTENTION : Êtes-vous sûr de vouloir faire tourner le servo de -120° ? Si la fusée est pressurisée, elle va décoller"))
+    document.getElementById("rotate-servo-minus-60")?.addEventListener("click", () => {
+        if (confirm("ATTENTION : Êtes-vous sûr de vouloir faire tourner le servo de -60 ? Si la fusée est pressurisée, elle va décoller"))
         {
-            rotateServo(-120);
+            rotateServo(-60);
         }
     });
 

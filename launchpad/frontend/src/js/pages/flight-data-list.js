@@ -107,6 +107,6 @@ function createFlightElement(timestamp, index) {
 }
 
 function formatTimestamp(timestamp) {
-    const date = new Date(parseInt(timestamp));
+    const date = new Date(parseInt(timestamp) * 1000); 
     return date.toLocaleString();
 }

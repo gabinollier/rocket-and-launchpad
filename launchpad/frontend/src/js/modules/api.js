@@ -90,7 +90,8 @@ export const api = {
     },
 
     async startFilling(waterVolume, pressure) {
-        return await fetch(`/api/start-filling?water-volume=${waterVolume}&pressure=${pressure}`, {
+        const epochTime = Math.floor(Date.now() / 1000);
+        return await fetch(`/api/start-filling?water-volume=${waterVolume}&pressure=${pressure}&epoch-time=${epochTime}`, {
             method: 'POST'
         });
     },

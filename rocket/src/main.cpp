@@ -22,10 +22,10 @@ const int PARACHUTE_SERVO_PIN = 10;
 const int BUZZER_PIN = 6;
 
 const float LAUNCH_DETECTION_THRESHOLD = 0.5; // meters
-const float APOGEE_DETECTION_SPEED_THRESHOLD = 0; // m/s
-const float APOGEE_DETECTION_ALTITUDE_THRESHOLD = 1; // meters
-const int PARACHUTE_ALTITUDE_THRESHOLD = 60; // meters
-const int LANDING_DETECTION_ALTITUDE_THRESHOLD = 2; // meters
+const float APOGEE_DETECTION_SPEED_THRESHOLD = -1; // m/s
+const float APOGEE_DETECTION_ALTITUDE_THRESHOLD = 15; // meters
+const int PARACHUTE_ALTITUDE_THRESHOLD = 70; // meters
+const int LANDING_DETECTION_ALTITUDE_THRESHOLD = 3; // meters
 const int LANDING_DETECTION_DURATION = 3; // seconds
 
 // Sampling rate constants
@@ -82,6 +82,10 @@ int flightBufferIndex = 0;
 Servo parachuteServo;
 long int lastWifiTryTime = 0; //ms
 unsigned long ascendingStateEnterTime = 0;
+unsigned long espStartTime = 0; // s
+float targetPressure = 0.0;
+float targetWaterVolume = 0.0;
+unsigned int launchtime = 0; // seconds since epoch
 
 // Function prototypes
 
@@ -127,11 +131,16 @@ void closeParachute();
 void validationBuzzer();
 void longErrorBuzzer();
 void shortErrorBuzzer();
+void fallingBuzzer();
 
+unsigned long getCurrentSecondsSinceEpoch();
 
 
 void setup() 
 {
+    
+    
+
     Serial.begin(115200);
     delay(1000);
 
@@ -160,8 +169,7 @@ void setup()
     changeState(IDLING_OPEN);
 }
 
-void loop() 
-{
+void loop()  {
     static unsigned long lastSampleTime = 0;
 
     webSocketClient.loop();
@@ -214,6 +222,8 @@ void loop()
         {
             changeState(PARACHUTE_FALLING);
         }
+
+        fallingBuzzer();
     }
     else if (currentState == PARACHUTE_FALLING)
     {
@@ -228,6 +238,9 @@ void loop()
         {
             changeState(RECONNECTING);
         }
+
+        fallingBuzzer();
+
     }
 
     if (currentState == ERROR)
@@ -476,6 +489,7 @@ void changeState(RocketState newState)
         case ASCENDING:
             ascendingStateEnterTime = millis();
             copyPrelaunchBufferToFlightBuffer();
+            launchtime = getCurrentSecondsSinceEpoch();
             break;
 
         case FREE_FALLING:
@@ -720,6 +734,13 @@ void rocketWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
         {
             changeState(IDLING_OPEN);
         }
+
+        else if (type == "filling")
+        {
+            espStartTime = doc["epoch-time"].as<unsigned long>() - millis() / 1000; 
+            targetPressure = doc["target-pressure"].as<float>();
+            targetWaterVolume = doc["target-water-volume"].as<float>();
+        }
     }
 }
 
@@ -794,7 +815,7 @@ void openParachute()
 void closeParachute()
 {
     Serial.println("Fermeture du parachute...");
-    parachuteServo.write(45); 
+    parachuteServo.write(40); 
     delay(1000); 
     Serial.println("Parachute fermé.");
 }
@@ -816,8 +837,13 @@ bool uploadFlightData(int attempts)
         String serverPath = "http://" + launchpadIP + "/api/upload-flight-data";
         
         JsonDocument doc;
-        // Make the root of the document an array
-        JsonArray flightDataArray = doc.to<JsonArray>();
+        // Add top-level fields
+        doc["launchtime"] = launchtime;
+        doc["targetPressure"] = targetPressure;
+        doc["targetWaterVolume"] = targetWaterVolume;
+
+        // Create a nested array for flight data
+        JsonArray flightDataArray = doc.createNestedArray("flightData");
 
         for (int j = 0; j < flightBufferIndex; j++) {
             JsonObject flightDataObject = flightDataArray.add<JsonObject>();
@@ -921,4 +947,22 @@ void shortErrorBuzzer()
     delay(50);
 
     analogWrite(BUZZER_PIN, LOW);
+}
+
+void fallingBuzzer()
+{
+    static unsigned long lastBuzzTime = 0;
+    unsigned long currentTime = millis();
+
+    if (currentTime - lastBuzzTime < 600) {
+        lastBuzzTime = currentTime;
+        analogWrite(BUZZER_PIN, 16);
+        delay(200);
+        analogWrite(BUZZER_PIN, LOW);
+        return;
+    }
+}
+
+unsigned long getCurrentSecondsSinceEpoch() {
+    return espStartTime + millis() / 1000;
 }

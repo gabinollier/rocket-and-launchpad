@@ -40,7 +40,7 @@ async function showFlightData(timestamp) {
     const flightMetricsContainer = document.getElementById('flight-metrics');
     if (!flightMetricsContainer) return;
 
-    const date = new Date(parseInt(timestamp));
+    const date = new Date(parseInt(timestamp) * 1000); // Multiply by 1000 to convert seconds to milliseconds
     const formattedDate = date.toLocaleString();
 
     document.getElementById("title").innerText = `Données de vol du ${formattedDate}`;
@@ -50,22 +50,28 @@ async function showFlightData(timestamp) {
 
     try {
         // Fetch data
-        const flightData = await api.fetchFlightData(timestamp);
+        const apiResponse = await api.fetchFlightData(timestamp);
 
-        if (!flightData || !Array.isArray(flightData) || flightData.length < 2) { 
-            flightMetricsContainer.innerHTML = `<p>Not enough flight data to calculate velocities (need at least two).</p>`;
+        console.log("API Response:", apiResponse);
+
+        if (!apiResponse || !apiResponse.flightData || !Array.isArray(apiResponse.flightData) || apiResponse.flightData.length < 2) { 
+            flightMetricsContainer.innerHTML = `<p>Not enough flight data to calculate velocities (need at least two data points in flightData array).</p>`;
             return;
         }
 
-        var flightDuration = (Number(flightData[flightData.length-1].timestamp) - Number(flightData[0].timestamp)) / 1000
+        const actualFlightData = apiResponse.flightData;
+        const targetWaterVolume = apiResponse.targetWaterVolume !== undefined ? apiResponse.targetWaterVolume : 'N/A';
+        const targetPressure = apiResponse.targetPressure !== undefined ? apiResponse.targetPressure : 'N/A';
+
+        var flightDuration = (Number(actualFlightData[actualFlightData.length-1].timestamp) - Number(actualFlightData[0].timestamp)) / 1000;
 
         const velocities = [];
-        var maxAltitude = flightData[0].relativeAltitude;
+        var maxAltitude = actualFlightData[0].relativeAltitude;
         var maxVelocity = 0;
 
-        for (let i = 1; i < flightData.length; i++) {
-            const previousData = flightData[i-1];
-            const data = flightData[i];
+        for (let i = 1; i < actualFlightData.length; i++) {
+            const previousData = actualFlightData[i-1];
+            const data = actualFlightData[i];
 
             if (data.relativeAltitude > maxAltitude) {
                 maxAltitude = data.relativeAltitude;
@@ -98,10 +104,9 @@ async function showFlightData(timestamp) {
 
         // Display flight metrics
         flightMetricsContainer.innerHTML = `
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-6 text-center">
                 <div class="bg-white p-4 rounded-lg shadow">
                     <div class="flex items-center justify-center mb-2">
-                        <!-- Placeholder for timer icon -->
                         <svg class="w-8 h-8 text-blue-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                         <h3 class="text-lg font-semibold text-gray-700">Durée</h3>
                     </div>
@@ -109,30 +114,42 @@ async function showFlightData(timestamp) {
                 </div>
                 <div class="bg-white p-4 rounded-lg shadow">
                     <div class="flex items-center justify-center mb-2">
-                        <!-- Placeholder for mountain icon -->
                         <svg class="w-8 h-8 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"></path></svg>
-                        <h3 class="text-lg font-semibold text-gray-700">Altitude Maximale</h3>
+                        <h3 class="text-lg font-semibold text-gray-700">Altitude Max.</h3>
                     </div>
                     <p class="text-2xl font-bold text-gray-900">${maxAltitude.toFixed(2)} m</p>
                 </div>
                 <div class="bg-white p-4 rounded-lg shadow">
                     <div class="flex items-center justify-center mb-2">
-                        <!-- Placeholder for speedometer icon -->
                         <svg class="w-8 h-8 text-red-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                        <h3 class="text-lg font-semibold text-gray-700">Vitesse Maximale</h3>
+                        <h3 class="text-lg font-semibold text-gray-700">Vitesse Max.</h3>
                     </div>
                     <p class="text-2xl font-bold text-gray-900">${maxVelocity.toFixed(2)} m/s</p>
+                </div>
+                <div class="bg-white p-4 rounded-lg shadow">
+                    <div class="flex items-center justify-center mb-2">
+                        <svg class="w-8 h-8 text-purple-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                        <h3 class="text-lg font-semibold text-gray-700">Vol. Eau Cible</h3>
+                    </div>
+                    <p class="text-2xl font-bold text-gray-900">${typeof targetWaterVolume === 'number' ? targetWaterVolume.toFixed(2) + ' L' : targetWaterVolume}</p>
+                </div>
+                <div class="bg-white p-4 rounded-lg shadow">
+                    <div class="flex items-center justify-center mb-2">
+                         <svg class="w-8 h-8 text-yellow-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"></path></svg>
+                        <h3 class="text-lg font-semibold text-gray-700">Pression Cible</h3>
+                    </div>
+                    <p class="text-2xl font-bold text-gray-900">${typeof targetPressure === 'number' ? targetPressure.toFixed(2) + ' bar' : targetPressure}</p>
                 </div>
             </div>
         `;        
         
         // Charts
-        createAltitudeChart(flightData);
-        createVelocityChart(flightData, smoothedVelocities);
-        createAccelerationChart(flightData);
-        createGyroChart(flightData);
-        createTemperatureChart(flightData);
-        createPressureChart(flightData);
+        createAltitudeChart(actualFlightData);
+        createVelocityChart(actualFlightData, smoothedVelocities);
+        createAccelerationChart(actualFlightData);
+        createGyroChart(actualFlightData);
+        createTemperatureChart(actualFlightData);
+        createPressureChart(actualFlightData);
 
     } catch (error) {
         flightMetricsContainer.innerHTML = `<p style="color: red;">Erreur lors du chargement ou du traitement des données de vol: ${error.message}</p>`; 

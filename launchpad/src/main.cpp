@@ -19,25 +19,27 @@
 const char* wifiSSID = "Pas de tir 🚀";
 const char* wifiPassword = "hippocampe";
 const char* externalWifiSSID = "Livebox-D040";
-const char* externalWifiPassword = "3gr5xvwCHjifSxGSqP";
+const char* externalWifiPassword = NULL;
 const char* dnsName = "launchpad.local"; // on peut mettre autre chose que .local si on veut
 const byte DNS_PORT = 53;
 const float MAX_PRESSURE = 10.0; // bars
 const float LAUNCH_CLEARING_DELAY = 2; // seconds
+const float PRESSURE_MARGIN = 0.5; // bars 
 const int MAX_LOGS = 200;
 const char* SD_FLIGHT_DATA_DIR = "/flight_data"; 
 #define PRESSURE_SENSOR_I2C_ADDRESS 0x16 // mpx5700AP
 DFRobot_MPX5700 pressureSensor(&Wire, PRESSURE_SENSOR_I2C_ADDRESS);
 
 // PINS
-const int SERVO_PIN = 9;
-const int DISTRIBUTOR_PIN_ATMO = 5;
-const int DISTRIBUTOR_PIN_COMP = 6;
-const int FLOW_METER_PIN = 6;
-const int VALVE_PIN = 7;
+const int SERVO_PIN = 5; // grove
+const int VALVE_PIN = 6; // grove
+const int DISTRIBUTOR_PIN_ATMO = 9; // grove
+const int DISTRIBUTOR_PIN_COMP = 10; // grove
+
+const int FLOW_METER_PIN = 11;
 
 // SD Card pins
-const int SD_CS_PIN = 13;   // Chip Select pin for SD card
+const int SD_CS_PIN = 13;   
 
 // Data structures
 
@@ -55,6 +57,13 @@ enum LaunchpadState
     PRESSURIZING,
     READY_FOR_LAUNCH,
     LAUNCHING,
+};
+
+enum DistributorState 
+{
+    ATMOSPHERE,
+    COMPRESSOR,
+    LOCKED,
 };
 
 // Global variables
@@ -75,6 +84,8 @@ unsigned long deltaTime = 0;
 volatile int flowCount = 0;
 Servo lockServo;
 bool isLockSystemLocked = true;
+unsigned long espStartTime = 0;
+DistributorState currentDistributorState = ATMOSPHERE;
 
 // Function declarations
 
@@ -119,7 +130,6 @@ void sendWSNewLog(String timestamp, String message);
 void sendWSNewLaunchpadState(String newLaunchpadState);
 void sendWSNewRocketState(String newRocketState);
 void sendWSFilling(float waterVolume, float pressure);
-void sendWSNewDataAvailable(unsigned long launchtime, float maxRelativeAltitude);
 void sendWSOpenFairing();
 void sendWSCloseFairing();
 
@@ -140,6 +150,9 @@ void rotateServo(float turns);
 // Debug functions
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length);
 void println(String message);
+
+unsigned long getCurrentSecondsSinceEpoch();
+
 
 void setup()
 {
@@ -188,13 +201,13 @@ void loop()
     deltaTime = millis() - previousMillis;
     previousMillis = millis();
     
+    currentPressure = getPressure(); 
+    currentWaterVolume += flowCount * 0.002;
+    flowCount = 0; 
+
     dnsServer.processNextRequest();
     httpServer.handleClient();
     webSocketServer.loop();
-
-    currentPressure = getPressure(); 
-    currentWaterVolume += flowCount * 0.00208;
-    flowCount = 0; 
 
     if (currentLaunchpadState == WATER_FILLING) 
     {
@@ -209,6 +222,7 @@ void loop()
     } 
     else if (currentLaunchpadState == PRESSURIZING) 
     {
+        // Dumb pressure control logic
         if (currentPressure < targetPressure) 
         {
             sendWSFilling(currentWaterVolume, currentPressure);
@@ -220,6 +234,27 @@ void loop()
     }  
     else if (currentLaunchpadState == READY_FOR_LAUNCH)
     {
+        // Smart pressure control logic
+        if (currentDistributorState == LOCKED)
+        {
+            if (currentPressure < targetPressure - PRESSURE_MARGIN) 
+            {
+                setPressureDistributorToCompressor();
+            } 
+            else if (currentPressure > targetPressure + PRESSURE_MARGIN) 
+            {
+                setPressureDistributorToAtmosphere();
+            } 
+        }
+        else if (currentDistributorState == ATMOSPHERE && currentPressure <= targetPressure)
+        {
+            setPressureDistributorToLocked();
+        }
+        else if (currentDistributorState == COMPRESSOR && currentPressure >= targetPressure)
+        {
+            setPressureDistributorToLocked();
+        }
+
         sendWSFilling(currentWaterVolume, currentPressure);
     }
     else if (currentLaunchpadState == LAUNCHING) 
@@ -231,7 +266,7 @@ void loop()
         }
     }
 
-    delay(20);
+    delay(10);
 }
 
 void changeState(LaunchpadState newState) 
@@ -613,9 +648,9 @@ void handleAPIGetFlightData()
     if (!httpServer.hasArg("timestamp")) {
         httpServer.send(400, "application/json", "{\"error\":\"timestamp parameter required\"}");
         return;
-    }    // Read flight data from SD card CSV file
-    String timestamp = httpServer.arg("timestamp");
-    String filename = String(SD_FLIGHT_DATA_DIR) + "/flight_" + timestamp + ".csv";
+    }
+    String requestTimestamp = httpServer.arg("timestamp");
+    String filename = String(SD_FLIGHT_DATA_DIR) + "/flight_" + requestTimestamp + ".csv";
     
     File file = SD.open(filename);
     if (!file) {
@@ -624,28 +659,36 @@ void handleAPIGetFlightData()
         return;
     }
     
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
+    JsonDocument doc; 
+    JsonArray flightDataArray = doc.createNestedArray("flightData");
+
+    unsigned long launchtime = 0;
+    float targetPressure = 0.0;
+    float targetWaterVolume = 0.0;
     
     // Skip the CSV header line
     String headerLine = file.readStringUntil('\n');
+    headerLine.trim(); 
+
+    bool firstDataRow = true;
     
     // Read and parse each line of CSV data
     while (file.available()) {
         String line = file.readStringUntil('\n');
-        line.trim(); // Remove any trailing whitespace
+        line.trim(); 
         
-        if (line.length() == 0) continue; // Skip empty lines
+        if (line.length() == 0) continue; 
         
-        // Parse CSV line: timestamp,temperature,pressure,relativeAltitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ
         int fieldIndex = 0;
         int startIndex = 0;
-        JsonObject obj = arr.add<JsonObject>();
+        JsonObject obj = flightDataArray.createNestedObject();
         
         for (int i = 0; i <= line.length(); i++) {
             if (i == line.length() || line.charAt(i) == ',') {
                 String field = line.substring(startIndex, i);
+                field.trim(); 
                 
+                // CSV columns: timestamp,temperature,pressure,relativeAltitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,launchtime,targetPressure,targetWaterVolume
                 switch (fieldIndex) {
                     case 0: obj["timestamp"] = field; break;
                     case 1: obj["temperature"] = field.toFloat(); break;
@@ -657,14 +700,38 @@ void handleAPIGetFlightData()
                     case 7: obj["gyroX"] = field.toFloat(); break;
                     case 8: obj["gyroY"] = field.toFloat(); break;
                     case 9: obj["gyroZ"] = field.toFloat(); break;
+                    case 10: // launchtime
+                        if (firstDataRow && field.length() > 0) {
+                            launchtime = strtoul(field.c_str(), NULL, 10);
+                        }
+                        break;
+                    case 11: // targetPressure
+                        if (firstDataRow && field.length() > 0) {
+                            targetPressure = field.toFloat();
+                        }
+                        break;
+                    case 12: // targetWaterVolume
+                        if (firstDataRow && field.length() > 0) {
+                            targetWaterVolume = field.toFloat();
+                        }
+                        break;
                 }
                 
                 fieldIndex++;
                 startIndex = i + 1;
             }
         }
+        if (firstDataRow) {
+            firstDataRow = false;
+        }
     }
-      file.close();
+    
+    file.close();
+
+    // Add top-level fields
+    doc["launchtime"] = launchtime;
+    doc["targetPressure"] = targetPressure;
+    doc["targetWaterVolume"] = targetWaterVolume;
     
     String response;
     serializeJson(doc, response);
@@ -705,11 +772,11 @@ void handleAPIStartFilling()
         return;
     }
     
-    if (!httpServer.hasArg("water-volume") || !httpServer.hasArg("pressure")) 
+    if (!httpServer.hasArg("water-volume") || !httpServer.hasArg("pressure") || !httpServer.hasArg("epoch-time"))
     {
         JsonDocument doc;
         doc["status"] = "error";
-        doc["message"] = "Les paramètres de volume et de pression sont requis";
+        doc["message"] = "Les paramètres de volume, de pression et epoch-time sont requis";
         String response;
         serializeJson(doc, response);
         httpServer.send(400, "application/json", response);
@@ -718,6 +785,9 @@ void handleAPIStartFilling()
 
     targetWaterVolume = httpServer.arg("water-volume").toFloat();
     targetPressure = httpServer.arg("pressure").toFloat();
+    unsigned long epochTime = httpServer.arg("epoch-time").toInt();
+
+    espStartTime = epochTime - (millis() / 1000);
 
     if (targetWaterVolume <= 0) 
     {
@@ -817,23 +887,23 @@ void handleAPIUploadFlightData()
         httpServer.send(400, "application/json", "{\"error\":\"JSON invalide\"}");
         return;
     }
-    if (!doc.is<JsonArray>()) {
-        httpServer.send(400, "application/json", "{\"error\":\"Le corps doit être un tableau JSON\"}");
+
+    // Extract top-level fields
+    unsigned long launchtime = doc["launchtime"] | 0;
+    float targetPressure = doc["targetPressure"] | 0.0;
+    float targetWaterVolume = doc["targetWaterVolume"] | 0.0;
+
+    if (!doc["flightData"].is<JsonArray>()) {
+        httpServer.send(400, "application/json", "{\"error\":\"Le champ flightData doit être un tableau JSON\"}");
         return;
     }
-    JsonArray arr = doc.as<JsonArray>();
+    JsonArray arr = doc["flightData"].as<JsonArray>();
     if (arr.size() == 0) {
-        httpServer.send(400, "application/json", "{\"error\":\"Aucune donnée fournie\"}");
+        httpServer.send(400, "application/json", "{\"error\":\"Aucune donnée de vol fournie dans flightData\"}");
         return;
     }    
     
-    unsigned long launchtime = arr[0]["timestamp"] | 0;
-    float maxRelativeAltitude = -1000000.0;
-    for (JsonObject obj : arr) {
-        float relAlt = obj["relativeAltitude"] | 0.0;
-        if (relAlt > maxRelativeAltitude) maxRelativeAltitude = relAlt;
-    }
-      // Store flight data in SD card as CSV
+    // Store flight data in SD card as CSV
     String filename = String(SD_FLIGHT_DATA_DIR) + "/flight_" + String(launchtime) + ".csv";
     File file = SD.open(filename, FILE_WRITE);
     
@@ -841,8 +911,9 @@ void handleAPIUploadFlightData()
         println("Enregistrement des données de vol dans " + filename);
         
         // Write CSV header
-        file.println("timestamp,temperature,pressure,relativeAltitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ");
+        file.println("timestamp,temperature,pressure,relativeAltitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,launchtime,targetPressure,targetWaterVolume");
         
+        bool firstDataRow = true;
         // Write each data point
         for (JsonObject obj : arr) {
             unsigned long timestamp = obj["timestamp"] | 0;
@@ -860,7 +931,7 @@ void handleAPIUploadFlightData()
             file.print(",");
             file.print(temperature, 2);
             file.print(",");
-            file.print(pressure, 4);
+            file.print(pressure, 6);
             file.print(",");
             file.print(relativeAltitude, 2);
             file.print(",");
@@ -874,7 +945,20 @@ void handleAPIUploadFlightData()
             file.print(",");
             file.print(gyroY, 2);
             file.print(",");
-            file.println(gyroZ, 2);
+            file.print(gyroZ, 2);
+            file.print(",");
+
+            if (firstDataRow) {
+                file.print(launchtime);
+                file.print(",");
+                file.print(targetPressure, 2);
+                file.print(",");
+                file.println(targetWaterVolume, 2);
+                firstDataRow = false;
+            } else {
+                file.print(",,");
+                file.println();
+            }
         }
         
         file.close();
@@ -885,9 +969,6 @@ void handleAPIUploadFlightData()
         println("Erreur lors de l'ouverture du fichier " + filename + " pour l'écriture");
     }
 
-
-
-    sendWSNewDataAvailable(launchtime, maxRelativeAltitude);
     httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
@@ -905,14 +986,15 @@ void handleAPIRotateServo()
     }
 
     float turns = httpServer.arg("turns").toFloat();
-
-    println("Rotation du servo demandée : " + String(turns) + " tours.");
-    rotateServo(turns);
+    println("Rotation finale demandée : " + String(turns) + " tours.");
+    float servoTurns = turns * (30.0/22.0);
+    println("Rotation du servo commandée : " + String(servoTurns) + " tours.");
+    rotateServo(servoTurns);
     println("Rotation du servo terminée.");
 
     JsonDocument doc;
     doc["status"] = "ok";
-    doc["message"] = "Servo tourné de " + String(turns) + " tours.";
+    doc["message"] = "Servo tourné de " + String(servoTurns) + " tours.";
     String response;
     serializeJson(doc, response);
     httpServer.send(200, "application/json", response);
@@ -1013,18 +1095,10 @@ void sendWSFilling(float waterVolume, float pressure)
     doc["type"] = "filling";
     doc["water-volume"] = waterVolume;
     doc["pressure"] = pressure;
+    doc["target-water-volume"] = targetWaterVolume;
+    doc["target-pressure"] = targetPressure;
+    doc["epoch-time"] = getCurrentSecondsSinceEpoch();
     
-    String jsonString;
-    serializeJson(doc, jsonString);
-    webSocketServer.broadcastTXT(jsonString);
-}
-
-void sendWSNewDataAvailable(unsigned long launchtime, float maxRelativeAltitude)
-{
-    JsonDocument doc;
-    doc["type"] = "new-data-available";
-    doc["launchtime"] = launchtime;
-    doc["maxRelativeAltitude"] = maxRelativeAltitude;
     String jsonString;
     serializeJson(doc, jsonString);
     webSocketServer.broadcastTXT(jsonString);
@@ -1065,18 +1139,21 @@ void setPressureDistributorToAtmosphere()
 {
     digitalWrite(DISTRIBUTOR_PIN_ATMO, HIGH);
     digitalWrite(DISTRIBUTOR_PIN_COMP, LOW);
+    currentDistributorState = ATMOSPHERE;
 }
 
 void setPressureDistributorToCompressor() 
 {
-    digitalWrite(DISTRIBUTOR_PIN_ATMO, LOW);
+    digitalWrite(DISTRIBUTOR_PIN_ATMO, LOW); 
     digitalWrite(DISTRIBUTOR_PIN_COMP, HIGH);
+    currentDistributorState = COMPRESSOR;
 }
 
 void setPressureDistributorToLocked()
 {
     digitalWrite(DISTRIBUTOR_PIN_ATMO, LOW);
     digitalWrite(DISTRIBUTOR_PIN_COMP, LOW);
+    currentDistributorState = LOCKED;
 }
 
 void closeLockSystem()
@@ -1086,7 +1163,8 @@ void closeLockSystem()
         return;
     }
     isLockSystemLocked = true;
-    rotateServo(+0.33);
+    float servoTurns = (1.0/6.0)*(30.0/22.0);
+    rotateServo(+servoTurns);
     println("Système de verrouillage fermé.");
 }
 
@@ -1097,13 +1175,14 @@ void openLockSystem()
         return;
     }
     isLockSystemLocked = false;
-    rotateServo(-0.33);
+    float servoTurns = (1.0/6.0)*(30.0/22.0);
+    rotateServo(-servoTurns);
     println("Système de verrouillage ouvert.");
 }
 
 void rotateServo(float turns)
 {
-    const int DURATION_FOR_ONE_TURN = 1201; // milliseconds
+    const int DURATION_FOR_ONE_TURN = 1916; // milliseconds
 
     int pulse_length = 1200; // microseconds
 
@@ -1128,4 +1207,9 @@ void rotateServo(float turns)
 void IRAM_ATTR onFlowMeterInterrupt()
 {
     flowCount++;
+}
+
+unsigned long getCurrentSecondsSinceEpoch()
+{
+    return espStartTime + millis() / 1000;
 }
