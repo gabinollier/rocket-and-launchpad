@@ -1,5 +1,7 @@
 # Water Rocket Project
 
+[![Video of the Rocket](https://raw.githubusercontent.com/gabinollier/rocket-and-launchpad/main/rocket.mp4)](https://raw.githubusercontent.com/gabinollier/rocket-and-launchpad/main/rocket.mp4)
+
 This repository contains firmware and software for an ESP32-based water rocket system and its launchpad. The project includes both the rocket-side and launchpad-side code, allowing for automated pressurization, data collection, and wireless communication.
 It was developed as part of a school project at INSA Lyon engineering school, in 2025.
 
